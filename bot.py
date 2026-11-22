@@ -1,4 +1,4 @@
-"""LOTTERY AUTOBET V2.0 — Interactive Telegram Control Panel & Web Dashboard."""
+"""LOTTERY AUTOBET V2.1 — Complete Interactive Control Panel, 0-9 Number Feed & Web Dashboard."""
 
 from __future__ import annotations
 
@@ -67,19 +67,20 @@ tasks: dict[int, asyncio.Task] = {}
 strategies: dict[int, AutoStrategy] = {}
 session_meta: dict[int, dict] = {}
 
-# ── Interactive Tutorial Pages (Step 1 to 6) ─────────────────────────────────
+# ── Interactive Tutorial Pages ───────────────────────────────────────────────
 
 GUIDE_PAGES = [
     (
-        "🤖 *LOTTERY AUTOBET V2.0 — GUIDE*\n"
+        "🤖 *LOTTERY AUTOBET V2.1 — GUIDE*\n"
         "━━━━━━━━━━━━━━\n"
         "မင်္ဂလာပါ! ဒီ Bot က TRX 1-Min Round တွေမှာ အလိုအလျောက် လောင်းကြေးထိုးပေးသွားမှာ ဖြစ်ပါတယ်။\n\n"
         "📌 *ပါဝင်သော စနစ်များ:*\n"
         "1. Interactive Button Control Panel\n"
-        "2. Custom Stake Ladder (`100-300-700-1500`)\n"
-        "3. Pattern & AI Signal Strategy\n"
-        "4. SL Layer (Wait Mode / Smart Skip)\n"
-        "5. Live Chart Web Dashboard\n\n"
+        "2. 0–4 (SMALL) / 5–9 (BIG) ဂဏန်းအတိအကျ ပြသမှု\n"
+        "3. Custom Stake Ladder (`100-300-700-1500`)\n"
+        "4. Pattern & AI Signal Strategy\n"
+        "5. SL Layer (Wait Mode / Smart Skip)\n"
+        "6. Live Chart Web Dashboard\n\n"
         "👇 *Next* ကိုနှိပ်ပြီး ဆက်လေ့လာပါ။"
     ),
     (
@@ -88,7 +89,7 @@ GUIDE_PAGES = [
         "• *AI Signal:* နောက်ဆုံးရလဒ်များကို တွက်ချက်ပြီး Confidence အမြင့်ဆုံးဘက်ကို ထိုးပေးပါမယ်။\n"
         "• *Pattern Mode:* ကိုယ်ကြိုက်တဲ့ Pattern ထည့်နိုင်ပါတယ်။\n"
         "  ဥပမာ: `/setpattern BSSBSB`\n"
-        "• *Fixed Side:* BIG သို့မဟုတ် SMALL တစ်ဖက်တည်း စွဲထိုးပါမယ်။"
+        "• *Fixed Side:* BIG (5-9) သို့မဟုတ် SMALL (0-4) တစ်ဖက်တည်း စွဲထိုးပါမယ်။"
     ),
     (
         "🎫 *အဆင့် ၂ — Bet Method & Stake Ladder*\n"
@@ -173,7 +174,7 @@ def main_menu_keyboard(chat_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton(f"🛡️ SL Wait: {strat.config.sl_wait_trigger}→{strat.config.sl_wait_rounds}", callback_data="cycle:sl"),
         ],
         [
-            InlineKeyboardButton("📈 Status", callback_data="act:status"),
+            InlineKeyboardButton("🔄 Refresh", callback_data="act:refresh"),
             InlineKeyboardButton("📖 Guide (1/4)", callback_data="guide:0"),
         ],
     ])
@@ -200,7 +201,7 @@ def render_control_panel(chat_id: int) -> str:
     ladder_str = "-".join(str(x) for x in strat.config.stake_ladder)
 
     return (
-        f"🤖 *LOTTERY AUTOBET V2.0*\n"
+        f"🤖 *LOTTERY AUTOBET V2.1*\n"
         f"━━━━━━━━━━━━━━\n"
         f"Status: {'🍏 DEPLOYED (RUNNING)' if running else '🍎 STANDBY (PAUSED)'}\n"
         f"Balance: `{a['balance']:,} Ks` (Virtual)\n"
@@ -267,7 +268,7 @@ async def setpattern(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     pat = (context.args[0] if context.args else "").upper()
     if not pat or any(c not in ("B", "S") for c in pat):
         await update.effective_message.reply_text(
-            "Usage: `/setpattern BSSBSB` (B=BIG, S=SMALL)", parse_mode="Markdown"
+            "Usage: `/setpattern BSSBSB` (B=BIG 5-9, S=SMALL 0-4)", parse_mode="Markdown"
         )
         return
 
@@ -444,7 +445,7 @@ async def start_bot_session(chat_id: int, app: Application) -> None:
         f"🍏 *BOT DEPLOYED*\n"
         f"💫 Balance: Virtual • `{a['balance']:,} Ks`\n"
         f"━━━━━━━━━━━━━━\n"
-        f"💫 Game: `TRX_1M` • Big/Small\n"
+        f"💫 Game: `TRX_1M` • Big (5-9) / Small (0-4)\n"
         f"💫 Strategy: `{strat.config.strategy_type.upper()}`\n"
         f"💫 Betting: `{strat.config.bet_method.upper()}`\n"
         f"━━━━━━━━━━━━━━\n"
@@ -625,12 +626,14 @@ async def loop(chat_id: int, app: Application) -> None:
                 break
 
             outcome = None
+            drawn_num = None
             for _ in range(4):
                 try:
                     await api_client.get_current_round()
                     res_round = await api_client.get_result(round_id)
                     if res_round.status == "settled" and res_round.result:
                         outcome = res_round.result
+                        drawn_num = res_round.number
                         break
                 except Exception as exc:
                     logger.warning("Settle check error: %s", exc)
@@ -669,11 +672,12 @@ async def loop(chat_id: int, app: Application) -> None:
                 else:
                     session_meta[chat_id]["losses"] += 1
 
+            num_badge = f" (`{drawn_num}`)" if drawn_num is not None else ""
             badge = "✅ WIN" if r["won"] else "❌ LOSS"
             await app.bot.send_message(
                 chat_id,
                 f"🎲 Issue `{round_id}` — *{badge}*\n"
-                f"Bet: {r['side']} (`{r['stake']:,}`) | Result: *{r['outcome']}*\n"
+                f"Bet: {r['side']} (`{r['stake']:,}`) | Result: *{r['outcome']}*{num_badge}\n"
                 f"P/L: `{r['net']:+,} Ks` | Bal: `{r['balance']:,} Ks`\n"
                 f"Today: `{r['daily_pnl']:+,} Ks` ({r['daily_count']} bets)",
                 parse_mode="Markdown",
@@ -697,7 +701,7 @@ async def _start_health_server(app: Application) -> None:
         html_path = Path("index.html")
         if html_path.exists():
             return web.FileResponse(html_path)
-        return web.Response(text="OK - LOTTERY AUTOBET V2.0")
+        return web.Response(text="OK - LOTTERY AUTOBET V2.1")
 
     async def handle_health(request):
         return web.Response(text="OK")
@@ -762,7 +766,7 @@ async def _start_health_server(app: Application) -> None:
     port = int(os.getenv("PORT", "10000"))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logger.info("V2.0 Web App & Health server listening on port %s", port)
+    logger.info("V2.1 Web App & Health server listening on port %s", port)
 
 
 def main() -> None:
@@ -799,7 +803,7 @@ def main() -> None:
 
     app.add_handler(CallbackQueryHandler(on_callback))
 
-    logger.info("LOTTERY AUTOBET V2.0 starting…")
+    logger.info("LOTTERY AUTOBET V2.1 starting…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
