@@ -15,6 +15,7 @@ class MockRound:
     opened_at: str
     closes_at: str
     settled_at: Optional[str]
+    number: Optional[int] = None
 
 
 class MockAppsScriptClient:
@@ -41,6 +42,7 @@ class MockAppsScriptClient:
                     opened_at=str(data.get("opened_at", "")),
                     closes_at=str(data.get("closes_at", "")),
                     settled_at=data.get("settled_at"),
+                    number=data.get("number"),
                 )
 
     async def get_result(self, round_id: str) -> MockRound:
@@ -48,7 +50,7 @@ class MockAppsScriptClient:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(
                 f"{self.base_url}?action=result&round_id={round_id}",
-                allow_redirects=True
+                allow_redirects=True,
             ) as resp:
                 data = await resp.json()
                 if "error" in data:
@@ -60,4 +62,5 @@ class MockAppsScriptClient:
                     opened_at=str(data.get("opened_at", "")),
                     closes_at=str(data.get("closes_at", "")),
                     settled_at=data.get("settled_at"),
+                    number=data.get("number"),
                 )
