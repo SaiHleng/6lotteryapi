@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>TRX Prediction Analysis</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    :root {
+      --bg-dark: #0f1923;
+      --panel-bg: #162330;
+      --border: #243647;
+      --accent: #f0b90b;
+      --green: #0ecb81;
+      --red: #f6465d;
+      --text: #eaecef;
+      --muted: #848e9c;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: var(--bg-dark); color: var(--text); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+    /* Top Toolbar */
+    .topbar {
+      height: 44px; background: var(--panel-bg); border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between; padding: 0 12px; font-size: 12px;
+    }
+    .badge { background: #1e2f40; border: 1px solid var(--border); padding: 4px 10px; border-radius: 4px; color: var(--accent); font-weight: 600; }
+    .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--green); margin-right: 6px; }
+    .status-dot.paused { background: var(--red); }
+
+    /* Main Grid */
+    .main { display: flex; flex: 1; overflow: hidden; }
+    .chart-area { flex: 1; position: relative; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+    #chart { flex: 1; width: 100%; }
+
+    /* Right Panel */
+    .sidebar { width: 290px; background: var(--panel-bg); display: flex; flex-direction: column; padding: 12px; gap: 10px; overflow-y: auto; }
+    @media (max-width: 720px) {
+      .main { flex-direction: column; }
+      .chart-area { height: 46%; border-right: none; border-bottom: 1px solid var(--border); }
+      .sidebar { width: 100%; height: 54%; }
+    }
+
+    .card { background: #111c26; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+    .profile-row { display: flex; align-items: center; justify-content: space-between; }
+    .title { font-weight: 700; font-size: 13px; color: var(--accent); letter-spacing: 0.5px; }
+    .subtitle { font-size: 10px; color: var(--muted); }
+
+    .balance-label { font-size: 11px; color: var(--muted); }
+    .balance-val { font-size: 20px; font-weight: 700; color: #fff; margin-top: 2px; }
+    .pnl { font-size: 12px; font-weight: 600; }
+    .pnl.pos { color: var(--green); }
+    .pnl.neg { color: var(--red); }
+
+    .pred-header { display: flex; justify-content: space-between; font-size: 11px; color: var(--accent); font-weight: 600; }
+    .issue-id { text-align: center; font-size: 12px; color: var(--muted); margin: 6px 0; }
+    .signal-box {
+      text-align: center; padding: 12px; border-radius: 6px; font-size: 24px; font-weight: 800; letter-spacing: 3px;
+      background: rgba(246, 70, 93, 0.14); border: 1px solid var(--red); color: var(--red);
+    }
+    .signal-box.BIG { background: rgba(14, 203, 129, 0.14); border-color: var(--green); color: var(--green); }
+
+    .conf-row { display: flex; justify-content: space-between; font-size: 11px; margin-top: 10px; color: var(--muted); }
+    .bar-bg { height: 6px; background: #1e2f40; border-radius: 3px; margin-top: 5px; overflow: hidden; }
+    .bar-fill { height: 100%; background: var(--green); transition: width 0.4s; }
+
+    .reason-box { font-size: 11px; color: #cbd5e1; background: #172636; padding: 8px; border-radius: 6px; margin-top: 8px; line-height: 1.4; }
+
+    .btn-row { display: flex; gap: 8px; margin-top: 4px; }
+    button {
+      flex: 1; padding: 9px; border: none; border-radius: 6px; font-weight: 700; font-size: 12px; cursor: pointer;
+    }
+    .btn-run { background: var(--green); color: #08120e; }
+    .btn-stop { background: var(--red); color: #fff; }
+
+    .hist-item { display: flex; justify-content: space-between; font-size: 11px; padding: 5px 0; border-bottom: 1px solid #1c2c3b; }
+    .hist-item:last-child { border-bottom: none; }
+  </style>
+</head>
+<body>
+
+  <div class="topbar">
+    <div><span id="dot" class="status-dot paused"></span><strong id="bot-status">PAUSED</strong></div>
+    <div class="badge">TRX/MMK · M1</div>
+    <div id="timer" class="badge">--s</div>
+  </div>
+
+  <div class="main">
+    <div class="chart-area">
+      <div id="chart"></div>
+    </div>
+
+    <div class="sidebar">
+      <div class="card profile-row">
+        <div>
+          <div class="title">TRX PREDICTION ANALYSIS</div>
+          <div class="subtitle">LIVE MOCK API FEED</div>
+        </div>
+        <div id="pnl" class="pnl pos">+0</div>
+      </div>
+
+      <div class="card">
+        <div class="balance-label">VIRTUAL BALANCE</div>
+        <div class="balance-val"><span id="balance">100,000</span> <small style="font-size:12px;color:var(--accent)">MMK</small></div>
+      </div>
+
+      <div class="card">
+        <div class="pred-header">
+          <span>◆ NEXT PREDICTION</span>
+          <span id="strat-mode">SIGNAL</span>
+        </div>
+        <div class="issue-id">Issue <span id="round-id">Loading...</span></div>
+        <div id="signal-box" class="signal-box">SMALL</div>
+
+        <div class="conf-row">
+          <span>Confidence</span>
+          <span id="conf-text">50%</span>
+        </div>
+        <div class="bar-bg"><div id="conf-bar" class="bar-fill" style="width:50%"></div></div>
+
+        <div id="reason" class="reason-box">Waiting for round data...</div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn-run" onclick="controlBot('run')">▶ START AUTO</button>
+        <button class="btn-stop" onclick="controlBot('stop')">⏹ STOP</button>
+      </div>
+
+      <div class="card" style="flex:1; overflow-y:auto;">
+        <div class="subtitle" style="margin-bottom:6px;">RECENT ROUNDS</div>
+        <div id="history-list"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const tg = window.Telegram?.WebApp;
+  if (tg) { tg.ready(); tg.expand(); }
+
+  // Initialize Candlestick Chart
+  const chartEl = document.getElementById('chart');
+  const chart = LightweightCharts.createChart(chartEl, {
+    layout: { background: { color: '#0f1923' }, textColor: '#848e9c' },
+    grid: { vertLines: { color: '#182635' }, horzLines: { color: '#182635' } },
+    timeScale: { timeVisible: true, secondsVisible: false },
+  });
+  const candleSeries = chart.addCandlestickSeries({
+    upColor: '#0ecb81', downColor: '#f6465d', borderVisible: false,
+    wickUpColor: '#0ecb81', wickDownColor: '#f6465d'
+  });
+
+  new ResizeObserver(() => {
+    chart.applyOptions({ width: chartEl.clientWidth, height: chartEl.clientHeight });
+  }).observe(chartEl);
+
+  function buildCandles(history) {
+    let price = 10015.50;
+    const now = Math.floor(Date.now() / 1000);
+    const items = [...history].reverse();
+    const candles = [];
+    const baseTime = now - (items.length + 15) * 60;
+
+    for (let i = 0; i < 15; i++) {
+      const open = price;
+      const close = open + (Math.sin(i) * 0.04);
+      candles.push({ time: baseTime + i * 60, open, high: Math.max(open, close) + 0.02, low: Math.min(open, close) - 0.02, close });
+      price = close;
+    }
+
+    items.forEach((h, idx) => {
+      const open = price;
+      const delta = h.outcome === 'BIG' ? 0.06 : -0.06;
+      const close = Number((open + delta).toFixed(2));
+      candles.push({
+        time: baseTime + (15 + idx) * 60,
+        open, high: Math.max(open, close) + 0.03, low: Math.min(open, close) - 0.03, close
+      });
+      price = close;
+    });
+    return candles;
+  }
+
+  async function fetchState() {
+    try {
+      const res = await fetch('/api/state');
+      const d = await res.json();
+
+      document.getElementById('bot-status').textContent = d.running ? 'RUNNING' : 'PAUSED';
+      document.getElementById('dot').className = 'status-dot' + (d.running ? '' : ' paused');
+      document.getElementById('balance').textContent = Number(d.balance).toLocaleString();
+
+      const pnlEl = document.getElementById('pnl');
+      pnlEl.textContent = (d.daily_pnl >= 0 ? '+' : '') + Number(d.daily_pnl).toLocaleString();
+      pnlEl.className = 'pnl ' + (d.daily_pnl >= 0 ? 'pos' : 'neg');
+
+      document.getElementById('round-id').textContent = d.round_id || '---';
+      document.getElementById('timer').textContent = (d.seconds_left ?? '--') + 's';
+
+      const sigBox = document.getElementById('signal-box');
+      sigBox.textContent = d.signal.side;
+      sigBox.className = 'signal-box ' + d.signal.side;
+
+      document.getElementById('conf-text').textContent = d.signal.confidence + '%';
+      document.getElementById('conf-bar').style.width = d.signal.confidence + '%';
+      document.getElementById('reason').textContent = d.signal.reason;
+      document.getElementById('strat-mode').textContent = d.strategy_mode.toUpperCase();
+
+      candleSeries.setData(buildCandles(d.history || []));
+
+      const histEl = document.getElementById('history-list');
+      histEl.innerHTML = (d.history || []).map(r => `
+        <div class="hist-item">
+          <span>#${r.id} ${r.side} → <strong>${r.outcome}</strong></span>
+          <span style="color:${r.won ? '#0ecb81' : '#f6465d'}">${r.won ? 'WIN' : 'LOSS'} (${r.net >= 0 ? '+' : ''}${r.net})</span>
+        </div>
+      `).join('');
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  async function controlBot(action) {
+    await fetch('/api/control', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action })
+    });
+    fetchState();
+  }
+
+  fetchState();
+  setInterval(fetchState, 3000);
+</script>
+</body>
+</html>
