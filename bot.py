@@ -597,49 +597,9 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────
+# ── Entry point ──────────────────────────────────────────────────────────────
 
 def main() -> None:
-    if not TOKEN:
-        raise SystemExit(
-            "Missing TELEGRAM_BOT_TOKEN. Copy .env.example → .env"
-        )
-
-    if not OWNER_ID or not OWNER_ID.isdecimal():
-        print("ALLOWED_CHAT_ID not set — only /id will work.")
-
-    store.pause_all_at_restart()
-
-    app = Application.builder().token(TOKEN).build()
-
-    handlers = (
-        ("start", start),
-        ("help", start),
-        ("id", identify),
-        ("apihealth", apihealth),
-        ("status", status),
-        ("stake", stake),
-        ("side", side),
-        ("interval", interval),
-        ("limits", limits),
-        ("run", run),
-        ("stop", stop),
-        ("history", history),
-        ("reset", reset),
-        # prediction
-        ("signal", signal_cmd),
-        ("predmode", predmode),
-        # strategy
-        ("strategy", strategy_toggle),
-        ("strategymode", strategymode),
-        ("minconf", minconf),
-        ("strategyinfo", strategyinfo),
-    )
-    for name, callback in handlers:
-        app.add_handler(CommandHandler(name, callback))
-
-    logger.info("TRX Mock API bot v1.3 starting…")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-
+...
 if __name__ == "__main__":
     main()
