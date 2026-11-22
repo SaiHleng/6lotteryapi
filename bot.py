@@ -1,13 +1,9 @@
-"""Telegram control panel for a virtual TRX-like fixed-bet simulator.
-
-There is NO live betting function and NO unofficial 6Lottery API access.
-This bot exists only for testing risk controls, prediction UX, auto-strategy
-logic and ledger behaviour.
-"""
+"""Telegram control panel connected to Google Apps Script TRX Mock API."""
 
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import logging
 import os
 from pathlib import Path
@@ -28,6 +24,7 @@ from engine import (
     MIN_MAX_BETS,
     MAX_MAX_BETS,
 )
+from mock_api_client import MockAppsScriptClient
 from prediction import Predictor
 from strategy import AutoStrategy, StrategyConfig
 
@@ -38,6 +35,10 @@ load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 OWNER_ID = os.getenv("ALLOWED_CHAT_ID", "").strip()
 DB_PATH = Path(os.getenv("DB_PATH", "trx_virtual.sqlite3"))
+MOCK_API_URL = os.getenv(
+    "MOCK_API_URL",
+    "https://script.google.com/macros/s/AKfycbxSeLUqO-H1aL71MdyywdNQ1I2pfEBiUbtNFB9_zomuF6UbWgToWUkO4pMwvDd2Q2rtCQ/exec",
+).strip()
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -46,23 +47,24 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 store = Store(DB_PATH)
+api_client = MockAppsScriptClient(MOCK_API_URL)
 tasks: dict[int, asyncio.Task] = {}
 strategies: dict[int, AutoStrategy] = {}
 
-HELP = """🧪 TRX Fixed Bet — VIRTUAL SIMULATOR (v1.2)
+HELP = """🧪 TRX Mock API Bot — VIRTUAL SIMULATOR (v1.3)
 
-ဒီ Bot သည် 6Lottery နှင့် မချိတ်ထားပါ။ ငွေအစစ်မသုံးပါ။
-ရလဒ်အားလုံးသည် Virtual 50/50 ဖြစ်သည်။
+Google Apps Script Mock API နှင့် ချိတ်ဆက်ထားပါသည်။
+တစ်မိနစ်တစ်ကြိမ် Round အလိုအလျောက် စစ်ဆေးပါမည်။
 
 📌 အခြေခံ
 /start /help — ဒီစာ
 /id — Chat ID
+/apihealth — Mock API ချိတ်ဆက်မှု စစ်ရန်
 /status — Balance + settings
 /stake 100 — Fixed stake
 /side big|small — Fixed side
-/interval 60 — Round interval (sec)
 /limits 3000 3000 40 — Loss / Profit / Max bets
-/run — Auto simulation စတင်
+/run — Auto 1-min API loop စတင်
 /stop — ရပ်
 /history — နောက်ဆုံး ၈ ကြိမ်
 /reset CONFIRM — Ledger ပြန်စ
@@ -75,9 +77,7 @@ HELP = """🧪 TRX Fixed Bet — VIRTUAL SIMULATOR (v1.2)
 /strategy on|off
 /strategymode signal|fixed|martingale
 /minconf 65 — Signal confidence အနည်းဆုံး
-/strategyinfo — လက်ရှိ strategy အခြေအနေ
-
-⚠️ အားလုံး Virtual ဖြစ်သည်။ တကယ့်ပိုက်ဆံ မသုံးပါ။"""
+/strategyinfo — လက်ရှိ strategy အခြေအနေ"""
 
 
 # ── Access control ───────────────────────────────────────────────────────────
@@ -133,6 +133,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_message.reply_text(HELP)
 
 
+async def apihealth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await guard(update):
+        return
+    try:
+        res = await api_client.health()
+        cur = await api_client.get_current_round()
+        await update.effective_message.reply_text(
+            f"✅ Mock API Connected!\n"
+            f"Status: {res.get('status')} | Mode: {res.get('mode')}\n"
+            f"Current Round: `{cur.round_id}` ({cur.status})\n"
+            f"Closes at: {cur.closes_at}",
+            parse_mode="Markdown",
+        )
+    except Exception as exc:
+        await update.effective_message.reply_text(f"❌ API Connection Error:\n{exc}")
+
+
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await guard(update):
         return
@@ -146,12 +163,12 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     strat = get_strategy(chat_id)
 
     await update.effective_message.reply_text(
-        "🧪 VIRTUAL TRX BOT — "
+        "🧪 TRX MOCK API BOT — "
         + ("RUNNING ▶️" if running else "PAUSED ⏹")
         + "\n"
         f"Balance: {a['balance']:,} virtual units\n"
         f"Stake: {a['stake']:,} | Side: {a['side']}\n"
-        f"Interval: {a['interval_sec']} sec\n"
+        f"Mode: Auto 1-min Sync (Apps Script)\n"
         f"Today bets: {stats['count']}/{a['max_daily_bets']}\n"
         f"Today P/L: {stats['pnl']:+,}\n"
         f"Stop-loss: {a['stop_loss']:,} | Take-profit: {a['take_profit']:,}\n"
@@ -159,8 +176,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Strategy: {'ON' if strat.config.enabled else 'OFF'} "
         f"({strat.config.mode})\n"
         f"Min confidence: {strat.config.min_confidence}%\n"
-        f"Pred mode: {a.get('pred_mode', 'mixed')}\n"
-        "Payout: hypothetical 1.90x (virtual only)"
+        f"Pred mode: {a.get('pred_mode', 'mixed')}"
     )
 
 
@@ -211,7 +227,7 @@ async def interval(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     store.update(update.effective_chat.id, interval_sec=n)
-    await update.effective_message.reply_text(f"Interval → {n} seconds")
+    await update.effective_message.reply_text(f"Fallback interval → {n} seconds")
 
 
 async def limits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -256,12 +272,10 @@ async def signal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     bar = "█" * (sig.confidence // 10) + "░" * (10 - sig.confidence // 10)
     await update.effective_message.reply_text(
-        f"📡 VIRTUAL SIGNAL\n"
+        f"📡 SIGNAL PREVIEW\n"
         f"Side: *{sig.side}*\n"
         f"Confidence: {sig.confidence}%  [{bar}]\n"
-        f"Reason: {sig.reason}\n"
-        f"──────────────\n"
-        f"⚠️ ဒါသည် Virtual signal သာဖြစ်သည်။ တကယ့်ရလဒ် မဟုတ်ပါ။",
+        f"Reason: {sig.reason}",
         parse_mode="Markdown",
     )
 
@@ -358,27 +372,59 @@ async def strategyinfo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
-# ── Core loop ────────────────────────────────────────────────────────────────
+# ── Core 1-Minute Synced API Loop ────────────────────────────────────────────
+
+def _seconds_until_close(closes_at_iso: str) -> float:
+    """Calculate seconds remaining until closes_at."""
+    try:
+        closes_dt = datetime.fromisoformat(closes_at_iso)
+        now_dt = datetime.now(closes_dt.tzinfo)
+        diff = (closes_dt - now_dt).total_seconds()
+        return max(1.0, min(diff + 1.5, 65.0))  # +1.5s buffer so Apps Script settles
+    except Exception:
+        return 60.0
+
 
 async def loop(chat_id: int, app: Application) -> None:
+    last_played_round_id: str | None = None
+
     try:
         while store.get(chat_id)["active"]:
+            # 1. Fetch current round from Apps Script
+            try:
+                cur_round = await api_client.get_current_round()
+            except Exception as exc:
+                logger.warning("API fetch error: %s", exc)
+                await asyncio.sleep(5)
+                continue
+
+            # If the returned round was already settled just now, immediately fetch again for new open round
+            if cur_round.status != "open" or cur_round.round_id == last_played_round_id:
+                await asyncio.sleep(2)
+                continue
+
+            round_id = cur_round.round_id
+            wait_sec = _seconds_until_close(cur_round.closes_at)
+
             a = store.get(chat_id)
             strat = get_strategy(chat_id)
             recent = store.recent_outcomes(chat_id, 20)
             predictor = Predictor(a.get("pred_mode", "mixed"))
             sig = predictor.generate(recent)
 
-            # Decide whether / how to bet
+            # 2. Decide whether / how to bet
             if strat.config.enabled:
                 decision = strat.decide(sig, a["balance"])
                 if not decision.should_bet:
                     await app.bot.send_message(
                         chat_id,
-                        f"⏭ SKIP\n{decision.reason}\n"
-                        f"Signal was: {sig.side} ({sig.confidence}%)",
+                        f"⏭ SKIP Round `{round_id}`\n"
+                        f"{decision.reason}\n"
+                        f"Signal: {sig.side} ({sig.confidence}%) · Wait {int(wait_sec)}s",
+                        parse_mode="Markdown",
                     )
-                    await asyncio.sleep(a["interval_sec"])
+                    last_played_round_id = round_id
+                    await asyncio.sleep(wait_sec)
                     continue
                 use_side = decision.side
                 use_stake = decision.stake
@@ -388,9 +434,48 @@ async def loop(chat_id: int, app: Application) -> None:
                 use_stake = a["stake"]
                 reason = "Manual fixed settings"
 
+            await app.bot.send_message(
+                chat_id,
+                f"⏳ Round `{round_id}` OPEN\n"
+                f"Bet: *{use_side}* × {use_stake:,}\n"
+                f"Waiting {int(wait_sec)}s for result...",
+                parse_mode="Markdown",
+            )
+
+            # 3. Wait until round closes
+            await asyncio.sleep(wait_sec)
+
+            if not store.get(chat_id)["active"]:
+                break
+
+            # 4. Trigger settlement on Apps Script & read result
+            outcome = None
+            for _ in range(4):
+                try:
+                    await api_client.get_current_round()  # triggers settleRound() if time passed
+                    res_round = await api_client.get_result(round_id)
+                    if res_round.status == "settled" and res_round.result:
+                        outcome = res_round.result
+                        break
+                except Exception as exc:
+                    logger.warning("Settle check error: %s", exc)
+                await asyncio.sleep(2)
+
+            if not outcome:
+                await app.bot.send_message(
+                    chat_id,
+                    f"⚠️ Round `{round_id}` result delayed from API. Moving to next.",
+                    parse_mode="Markdown",
+                )
+                last_played_round_id = round_id
+                continue
+
+            # 5. Record result in SQLite ledger
             try:
                 r = store.virtual_round(
                     chat_id,
+                    outcome=outcome,
+                    round_id=round_id,
                     side=use_side,
                     stake=use_stake,
                     signal_side=sig.side,
@@ -402,29 +487,27 @@ async def loop(chat_id: int, app: Application) -> None:
                 await app.bot.send_message(chat_id, "🛑 AUTO-STOP: " + str(exc))
                 break
             except Exception:
-                logger.exception("Virtual engine error")
+                logger.exception("Engine error")
                 store.update(chat_id, active=0)
-                await app.bot.send_message(
-                    chat_id, "🛑 Simulation error; bot paused."
-                )
+                await app.bot.send_message(chat_id, "🛑 Engine error; bot paused.")
                 break
 
-            # Update strategy state
+            last_played_round_id = round_id
             strat.on_result(r["won"])
 
-            result = "✅ SIM WIN" if r["won"] else "❌ SIM LOSS"
+            result_label = "✅ WIN" if r["won"] else "❌ LOSS"
             await app.bot.send_message(
                 chat_id,
-                f"🧪 {result} (FAKE DRAW)\n"
-                f"Bet: {r['side']} × {r['stake']:,}\n"
-                f"Outcome: {r['outcome']}\n"
+                f"🎲 Round `{round_id}` — {result_label}\n"
+                f"Bet: {r['side']} × {r['stake']:,} | Outcome: *{r['outcome']}*\n"
                 f"P/L: {r['net']:+,} | Balance: {r['balance']:,}\n"
                 f"Today: {r['daily_pnl']:+,} / {r['daily_count']} bets\n"
                 f"──────────────\n"
                 f"Signal: {sig.side} ({sig.confidence}%) · {sig.reason}\n"
                 f"Strategy: {reason}",
+                parse_mode="Markdown",
             )
-            await asyncio.sleep(store.get(chat_id)["interval_sec"])
+
     except asyncio.CancelledError:
         pass
     finally:
@@ -451,8 +534,8 @@ async def run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         loop(chat_id, context.application)
     )
     await update.effective_message.reply_text(
-        "▶️ Virtual auto simulation started.\n"
-        "NO real money · NO live API.\n"
+        "▶️ Auto 1-min Mock API loop started!\n"
+        "Google Apps Script မှ တစ်မိနစ်တိုင်း Round ယူပါမည်။\n"
         "/stop to pause."
     )
 
@@ -475,10 +558,10 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     items = store.history(update.effective_chat.id)
     if not items:
-        await update.effective_message.reply_text("No simulated rounds yet.")
+        await update.effective_message.reply_text("No rounds played yet.")
         return
 
-    lines = ["🧪 LAST SIMULATED ROUNDS"]
+    lines = ["🧪 LAST MOCK API ROUNDS"]
     for r in items:
         sig = ""
         if r.get("signal_side"):
@@ -532,6 +615,7 @@ def main() -> None:
         ("start", start),
         ("help", start),
         ("id", identify),
+        ("apihealth", apihealth),
         ("status", status),
         ("stake", stake),
         ("side", side),
@@ -553,7 +637,7 @@ def main() -> None:
     for name, callback in handlers:
         app.add_handler(CommandHandler(name, callback))
 
-    logger.info("Virtual TRX bot v1.2 starting (signal + strategy)…")
+    logger.info("TRX Mock API bot v1.3 starting…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
