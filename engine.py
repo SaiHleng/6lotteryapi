@@ -217,15 +217,18 @@ class Store:
         self,
         chat_id: int,
         *,
+        outcome: str,
+        round_id: str | None = None,
         side: str | None = None,
         stake: int | None = None,
         signal_side: str | None = None,
         signal_conf: int | None = None,
         signal_reason: str | None = None,
     ) -> dict[str, Any]:
-        """Run exactly one *fictional* round, atomically with risk checks."""
+        """Record one round settled by the Mock Apps Script API."""
         current = now_local()
         day = current.date().isoformat()
+        clean_outcome = outcome.upper()
 
         with closing(self._connect()) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -271,9 +274,7 @@ class Store:
                 )
                 raise RiskStop(reason)
 
-            # Purely fictional 50/50 outcome — NOT an official TRX / 6Lottery result.
-            outcome = secrets.choice(("BIG", "SMALL"))
-            won = use_side == outcome
+            won = use_side == clean_outcome
 
             if won:
                 net = int(
@@ -303,19 +304,20 @@ class Store:
                     day,
                     use_stake,
                     use_side,
-                    outcome,
+                    clean_outcome,
                     int(won),
                     net,
                     new_balance,
                     signal_side,
                     signal_conf,
-                    signal_reason,
+                    f"[{round_id}] {signal_reason}" if round_id else signal_reason,
                 ),
             )
 
             return {
+                "round_id": round_id,
                 "side": use_side,
-                "outcome": outcome,
+                "outcome": clean_outcome,
                 "won": won,
                 "stake": use_stake,
                 "net": net,
