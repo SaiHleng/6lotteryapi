@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from engine import (
@@ -33,12 +33,18 @@ from strategy import AutoStrategy, StrategyConfig
 load_dotenv()
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-OWNER_ID = os.getenv("ALLOWED_CHAT_ID", "").strip()
+RAW_OWNERS = os.getenv("ALLOWED_CHAT_ID", "").strip()
+OWNER_IDS: set[int] = {
+    int(x.strip()) for x in RAW_OWNERS.split(",") if x.strip().isdecimal()
+}
+PRIMARY_OWNER_ID: int | None = next(iter(OWNER_IDS), None)
+
 DB_PATH = Path(os.getenv("DB_PATH", "trx_virtual.sqlite3"))
 MOCK_API_URL = os.getenv(
     "MOCK_API_URL",
     "https://script.google.com/macros/s/AKfycbxSeLUqO-H1aL71MdyywdNQ1I2pfEBiUbtNFB9_zomuF6UbWgToWUkO4pMwvDd2Q2rtCQ/exec",
 ).strip()
+WEBAPP_URL = os.getenv("WEBAPP_URL", "https://sixlotteryapi.onrender.com").strip()
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -51,10 +57,13 @@ api_client = MockAppsScriptClient(MOCK_API_URL)
 tasks: dict[int, asyncio.Task] = {}
 strategies: dict[int, AutoStrategy] = {}
 
-HELP = """🧪 TRX Mock API Bot — VIRTUAL SIMULATOR (v1.3)
+HELP = """🧪 TRX Mock API Bot — VIRTUAL SIMULATOR (v1.4)
 
 Google Apps Script Mock API နှင့် ချိတ်ဆက်ထားပါသည်။
 တစ်မိနစ်တစ်ကြိမ် Round အလိုအလျောက် စစ်ဆေးပါမည်။
+
+📊 Web Dashboard
+/dashboard — Live Chart & Prediction Web View ဖွင့်ရန်
 
 📌 အခြေခံ
 /start /help — ဒီစာ
@@ -84,12 +93,7 @@ Google Apps Script Mock API နှင့် ချိတ်ဆက်ထားပ
 
 def allow(update: Update) -> bool:
     chat = update.effective_chat
-    return bool(
-        OWNER_ID
-        and OWNER_ID.isdecimal()
-        and chat
-        and chat.id == int(OWNER_ID)
-    )
+    return bool(chat and chat.id in OWNER_IDS)
 
 
 async def guard(update: Update) -> bool:
@@ -97,7 +101,7 @@ async def guard(update: Update) -> bool:
         if update.effective_message:
             await update.effective_message.reply_text(
                 "⛔ Owner-only bot ဖြစ်ပါတယ်။ /id ကိုသုံးပြီး သင့် Chat ID ကိုဖတ်ပါ။ "
-                "ပြီးမှ .env ထဲက ALLOWED_CHAT_ID မှာ ထည့်ပြီး Bot ကို restart လုပ်ပါ။"
+                "ပြီးမှ ALLOWED_CHAT_ID မှာ ထည့်ပြီး Bot ကို restart လုပ်ပါ။"
             )
         return False
     store.ensure(update.effective_chat.id)
@@ -123,7 +127,7 @@ def get_strategy(chat_id: int) -> AutoStrategy:
 async def identify(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
         f"Your chat ID: `{update.effective_chat.id}`\n"
-        "ဒီ ID ကို .env ထဲက ALLOWED_CHAT_ID မှာ ထည့်ပါ။",
+        "ဒီ ID ကို ALLOWED_CHAT_ID မှာ ထည့်ပါ (Admin အများကြီးဆို ကော်မာခံထည့်ပါ)။",
         parse_mode="Markdown",
     )
 
@@ -131,6 +135,18 @@ async def identify(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await guard(update):
         await update.effective_message.reply_text(HELP)
+
+
+async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await guard(update):
+        return
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Open Trading Dashboard", web_app=WebAppInfo(url=WEBAPP_URL))]
+    ])
+    await update.effective_message.reply_text(
+        "📊 Live TRX Chart & Prediction Dashboard ကို ဖွင့်ရန် အောက်ပါခလုတ်ကို နှိပ်ပါ-",
+        reply_markup=kb,
+    )
 
 
 async def apihealth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -595,25 +611,87 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-# ── Entry point ──────────────────────────────────────────────────────────────
+# ── Entry point & Web Dashboard Server ───────────────────────────────────────
 
-async def _start_health_server() -> None:
-    """Keep Render Free Web Service alive by binding to $PORT."""
+async def _start_health_server(app: Application) -> None:
+    """Serve Web App UI + JSON state API + Render health check."""
     from aiohttp import web
 
-    async def handle_health(request):
+    async def handle_index(request):
+        html_path = Path("index.html")
+        if html_path.exists():
+            return web.FileResponse(html_path)
         return web.Response(text="OK - TRX Mock Bot Running")
 
+    async def handle_health(request):
+        return web.Response(text="OK")
+
+    async def handle_state(request):
+        if not PRIMARY_OWNER_ID:
+            return web.json_response({"error": "ALLOWED_CHAT_ID not set"}, status=400)
+        chat_id = PRIMARY_OWNER_ID
+        store.ensure(chat_id)
+        a = store.get(chat_id)
+        stats = store.today(chat_id)
+        recent = store.recent_outcomes(chat_id, 20)
+        sig = Predictor(a.get("pred_mode", "mixed")).generate(recent)
+        running = bool(a["active"] and chat_id in tasks and not tasks[chat_id].done())
+
+        round_id = "---"
+        seconds_left = 60
+        try:
+            cur = await api_client.get_current_round()
+            round_id = cur.round_id
+            seconds_left = int(_seconds_until_close(cur.closes_at))
+        except Exception:
+            pass
+
+        return web.json_response({
+            "running": running,
+            "balance": a["balance"],
+            "daily_pnl": stats["pnl"],
+            "round_id": round_id,
+            "seconds_left": seconds_left,
+            "strategy_mode": a.get("strategy_mode", "signal"),
+            "signal": {
+                "side": sig.side,
+                "confidence": sig.confidence,
+                "reason": sig.reason,
+            },
+            "history": store.history(chat_id, 15),
+        })
+
+    async def handle_control(request):
+        if not PRIMARY_OWNER_ID:
+            return web.json_response({"error": "ALLOWED_CHAT_ID not set"}, status=400)
+        chat_id = PRIMARY_OWNER_ID
+        store.ensure(chat_id)
+        body = await request.json()
+        act = body.get("action")
+        if act == "run":
+            existing = tasks.get(chat_id)
+            if not existing or existing.done():
+                store.update(chat_id, active=1)
+                tasks[chat_id] = app.create_task(loop(chat_id, app))
+        elif act == "stop":
+            store.update(chat_id, active=0)
+            t = tasks.get(chat_id)
+            if t and not t.done():
+                t.cancel()
+        return web.json_response({"ok": True})
+
     web_app = web.Application()
-    web_app.router.add_get("/", handle_health)
+    web_app.router.add_get("/", handle_index)
     web_app.router.add_get("/health", handle_health)
+    web_app.router.add_get("/api/state", handle_state)
+    web_app.router.add_post("/api/control", handle_control)
 
     runner = web.AppRunner(web_app)
     await runner.setup()
     port = int(os.getenv("PORT", "10000"))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logger.info("Health check web server listening on port %s", port)
+    logger.info("Web App & Health server listening on port %s", port)
 
 
 def main() -> None:
@@ -622,19 +700,20 @@ def main() -> None:
             "Missing TELEGRAM_BOT_TOKEN. Copy .env.example → .env"
         )
 
-    if not OWNER_ID or not OWNER_ID.isdecimal():
+    if not OWNER_IDS:
         print("ALLOWED_CHAT_ID not set — only /id will work.")
 
     store.pause_all_at_restart()
 
     async def post_init(application: Application) -> None:
-        await _start_health_server()
+        await _start_health_server(application)
 
     app = Application.builder().token(TOKEN).post_init(post_init).build()
 
     handlers = (
         ("start", start),
         ("help", start),
+        ("dashboard", dashboard_cmd),
         ("id", identify),
         ("apihealth", apihealth),
         ("status", status),
@@ -658,7 +737,7 @@ def main() -> None:
     for name, callback in handlers:
         app.add_handler(CommandHandler(name, callback))
 
-    logger.info("TRX Mock API bot v1.3 starting…")
+    logger.info("TRX Mock API bot v1.4 starting…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
