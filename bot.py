@@ -1,4 +1,4 @@
-"""Telegram control panel connected to Google Apps Script TRX Mock API."""
+"""LOTTERY AUTOBET V2.0 — Interactive Telegram Control Panel & Web Dashboard."""
 
 from __future__ import annotations
 
@@ -7,18 +7,27 @@ from datetime import datetime
 import logging
 import os
 from pathlib import Path
+import time
 
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Update,
+    WebAppInfo,
+)
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+)
 
 from engine import (
     Store,
     RiskStop,
     MIN_STAKE,
     MAX_STAKE,
-    MIN_INTERVAL,
-    MAX_INTERVAL,
     MIN_LIMIT,
     MAX_LIMIT,
     MIN_MAX_BETS,
@@ -56,40 +65,53 @@ store = Store(DB_PATH)
 api_client = MockAppsScriptClient(MOCK_API_URL)
 tasks: dict[int, asyncio.Task] = {}
 strategies: dict[int, AutoStrategy] = {}
+session_meta: dict[int, dict] = {}
 
-HELP = """🧪 TRX Mock API Bot — VIRTUAL SIMULATOR (v1.4)
+# ── Interactive Tutorial Pages (Step 1 to 6) ─────────────────────────────────
 
-Google Apps Script Mock API နှင့် ချိတ်ဆက်ထားပါသည်။
-တစ်မိနစ်တစ်ကြိမ် Round အလိုအလျောက် စစ်ဆေးပါမည်။
+GUIDE_PAGES = [
+    (
+        "🤖 *LOTTERY AUTOBET V2.0 — GUIDE*\n"
+        "━━━━━━━━━━━━━━\n"
+        "မင်္ဂလာပါ! ဒီ Bot က TRX 1-Min Round တွေမှာ အလိုအလျောက် လောင်းကြေးထိုးပေးသွားမှာ ဖြစ်ပါတယ်။\n\n"
+        "📌 *ပါဝင်သော စနစ်များ:*\n"
+        "1. Interactive Button Control Panel\n"
+        "2. Custom Stake Ladder (`100-300-700-1500`)\n"
+        "3. Pattern & AI Signal Strategy\n"
+        "4. SL Layer (Wait Mode / Smart Skip)\n"
+        "5. Live Chart Web Dashboard\n\n"
+        "👇 *Next* ကိုနှိပ်ပြီး ဆက်လေ့လာပါ။"
+    ),
+    (
+        "📚 *အဆင့် ၁ — Strategy ရွေးချယ်နည်း*\n"
+        "━━━━━━━━━━━━━━\n"
+        "• *AI Signal:* နောက်ဆုံးရလဒ်များကို တွက်ချက်ပြီး Confidence အမြင့်ဆုံးဘက်ကို ထိုးပေးပါမယ်။\n"
+        "• *Pattern Mode:* ကိုယ်ကြိုက်တဲ့ Pattern ထည့်နိုင်ပါတယ်။\n"
+        "  ဥပမာ: `/setpattern BSSBSB`\n"
+        "• *Fixed Side:* BIG သို့မဟုတ် SMALL တစ်ဖက်တည်း စွဲထိုးပါမယ်။"
+    ),
+    (
+        "🎫 *အဆင့် ၂ — Bet Method & Stake Ladder*\n"
+        "━━━━━━━━━━━━━━\n"
+        "• *Ladder / Martingale:* ရှုံးရင် နောက်တစ်ဆင့် တိုးထိုးပါမယ်။\n"
+        "• *Anti-Martingale:* နိုင်ရင် တိုးထိုးပြီး ရှုံးရင် အစပြန်ဆင်းပါမယ်။\n"
+        "• *D'Alembert:* ရှုံးရင် 1 Unit တိုး၊ နိုင်ရင် 1 Unit လျှော့ပါမယ်။\n\n"
+        "💰 *Custom Ladder ထည့်နည်း:*\n"
+        "`/setladder 100-300-700-1600-3600`\n"
+        "*(0 ထည့်ထားတဲ့ အဆင့်မှာ Skip လုပ်ပေးပါမယ် ဥပမာ: `0-0-100-300`)*"
+    ),
+    (
+        "🛡️ *အဆင့် ၃ — Risk & SL Layer (Wait Mode)*\n"
+        "━━━━━━━━━━━━━━\n"
+        "• *Take Profit / Stop Loss:* `/limits 3000 3000 50`\n"
+        "• *SL Layer (Smart Wait):* ဆက်တိုက်ရှုံးနေချိန် အရင်းကာကွယ်ရန် ခဏနားပြီး စောင့်ကြည့်ပေးပါမယ်။\n"
+        "  ဥပမာ: `/sllayer 3 2` (၃ ပွဲဆက်ရှုံးရင် ၂ ပွဲ မထိုးဘဲ စောင့်မယ်)\n"
+        "  ပိတ်ရန်: `/sllayer 0 0`"
+    ),
+]
 
-📊 Web Dashboard
-/dashboard — Live Chart & Prediction Web View ဖွင့်ရန်
 
-📌 အခြေခံ
-/start /help — ဒီစာ
-/id — Chat ID
-/apihealth — Mock API ချိတ်ဆက်မှု စစ်ရန်
-/status — Balance + settings
-/stake 100 — Fixed stake
-/side big|small — Fixed side
-/limits 3000 3000 40 — Loss / Profit / Max bets
-/run — Auto 1-min API loop စတင်
-/stop — ရပ်
-/history — နောက်ဆုံး ၈ ကြိမ်
-/reset CONFIRM — Ledger ပြန်စ
-
-📡 Prediction Signal
-/signal — နောက်တစ်ကြိမ် signal ကြည့်
-/predmode mixed|momentum|mean_reversion|random
-
-🤖 Auto-Strategy
-/strategy on|off
-/strategymode signal|fixed|martingale
-/minconf 65 — Signal confidence အနည်းဆုံး
-/strategyinfo — လက်ရှိ strategy အခြေအနေ"""
-
-
-# ── Access control ───────────────────────────────────────────────────────────
+# ── Access Control & Helpers ─────────────────────────────────────────────────
 
 def allow(update: Update) -> bool:
     chat = update.effective_chat
@@ -100,8 +122,7 @@ async def guard(update: Update) -> bool:
     if not allow(update):
         if update.effective_message:
             await update.effective_message.reply_text(
-                "⛔ Owner-only bot ဖြစ်ပါတယ်။ /id ကိုသုံးပြီး သင့် Chat ID ကိုဖတ်ပါ။ "
-                "ပြီးမှ ALLOWED_CHAT_ID မှာ ထည့်ပြီး Bot ကို restart လုပ်ပါ။"
+                "⛔ Owner-only bot ဖြစ်ပါတယ်။ /id ကိုသုံးပြီး သင့် Chat ID ကိုယူပါ။"
             )
         return False
     store.ensure(update.effective_chat.id)
@@ -112,9 +133,10 @@ def get_strategy(chat_id: int) -> AutoStrategy:
     if chat_id not in strategies:
         a = store.get(chat_id)
         cfg = StrategyConfig(
-            enabled=bool(a.get("strategy_enabled", 0)),
-            mode=a.get("strategy_mode", "signal"),
-            min_confidence=int(a.get("min_confidence", 65)),
+            enabled=True,
+            strategy_type="signal",
+            bet_method="ladder",
+            min_confidence=int(a.get("min_confidence", 60)),
             fixed_side=a.get("side", "BIG"),
             base_stake=int(a.get("stake", 100)),
         )
@@ -122,77 +144,165 @@ def get_strategy(chat_id: int) -> AutoStrategy:
     return strategies[chat_id]
 
 
+def format_duration(seconds: float) -> str:
+    s = int(seconds)
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h}h {m}m {sec}s"
+
+
+def main_menu_keyboard(chat_id: int) -> InlineKeyboardMarkup:
+    a = store.get(chat_id)
+    strat = get_strategy(chat_id)
+    running = bool(a["active"] and chat_id in tasks and not tasks[chat_id].done())
+
+    toggle_btn = (
+        InlineKeyboardButton("🍎 HALT (Stop)", callback_data="act:stop")
+        if running
+        else InlineKeyboardButton("🍏 DEPLOY (Run)", callback_data="act:run")
+    )
+
+    return InlineKeyboardMarkup([
+        [toggle_btn, InlineKeyboardButton("📊 Live Chart", web_app=WebAppInfo(url=WEBAPP_URL))],
+        [
+            InlineKeyboardButton(f"📚 Strat: {strat.config.strategy_type.upper()}", callback_data="cycle:strat"),
+            InlineKeyboardButton(f"🎫 Method: {strat.config.bet_method.upper()}", callback_data="cycle:method"),
+        ],
+        [
+            InlineKeyboardButton(f"🎯 Side: {a['side']}", callback_data="cycle:side"),
+            InlineKeyboardButton(f"🛡️ SL Wait: {strat.config.sl_wait_trigger}→{strat.config.sl_wait_rounds}", callback_data="cycle:sl"),
+        ],
+        [
+            InlineKeyboardButton("📈 Status", callback_data="act:status"),
+            InlineKeyboardButton("📖 Guide (1/4)", callback_data="guide:0"),
+        ],
+    ])
+
+
+def guide_keyboard(page: int) -> InlineKeyboardMarkup:
+    total = len(GUIDE_PAGES)
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Back", callback_data=f"guide:{page - 1}"))
+    if page < total - 1:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"guide:{page + 1}"))
+    return InlineKeyboardMarkup([
+        nav,
+        [InlineKeyboardButton("✖️ Close Guide", callback_data="guide:close")],
+    ])
+
+
+def render_control_panel(chat_id: int) -> str:
+    a = store.get(chat_id)
+    stats = store.today(chat_id)
+    strat = get_strategy(chat_id)
+    running = bool(a["active"] and chat_id in tasks and not tasks[chat_id].done())
+    ladder_str = "-".join(str(x) for x in strat.config.stake_ladder)
+
+    return (
+        f"🤖 *LOTTERY AUTOBET V2.0*\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"Status: {'🍏 DEPLOYED (RUNNING)' if running else '🍎 STANDBY (PAUSED)'}\n"
+        f"Balance: `{a['balance']:,} Ks` (Virtual)\n"
+        f"Today P/L: `{stats['pnl']:+,} Ks` ({stats['count']} bets)\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"🎮 Strategy: `{strat.config.strategy_type.upper()}` "
+        f"({strat.config.pattern if strat.config.strategy_type == 'pattern' else f'Conf ≥ {strat.config.min_confidence}%'})\n"
+        f"🎫 Method: `{strat.config.bet_method.upper()}`\n"
+        f"💰 Ladder: `{ladder_str}`\n"
+        f"🛡️ Risk: TP `{a['take_profit']:,}` | SL `{a['stop_loss']:,}` | Wait `{strat.config.sl_wait_trigger}L/{strat.config.sl_wait_rounds}R`"
+    )
+
+
 # ── Commands ─────────────────────────────────────────────────────────────────
 
 async def identify(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
-        f"Your chat ID: `{update.effective_chat.id}`\n"
-        "ဒီ ID ကို ALLOWED_CHAT_ID မှာ ထည့်ပါ (Admin အများကြီးဆို ကော်မာခံထည့်ပါ)။",
-        parse_mode="Markdown",
+        f"Your chat ID: `{update.effective_chat.id}`", parse_mode="Markdown"
     )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if await guard(update):
-        await update.effective_message.reply_text(HELP)
-
-
-async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await guard(update):
         return
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 Open Trading Dashboard", web_app=WebAppInfo(url=WEBAPP_URL))]
-    ])
+    chat_id = update.effective_chat.id
     await update.effective_message.reply_text(
-        "📊 Live TRX Chart & Prediction Dashboard ကို ဖွင့်ရန် အောက်ပါခလုတ်ကို နှိပ်ပါ-",
-        reply_markup=kb,
+        render_control_panel(chat_id),
+        reply_markup=main_menu_keyboard(chat_id),
+        parse_mode="Markdown",
     )
 
 
-async def apihealth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def setladder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await guard(update):
         return
+    raw = context.args[0] if context.args else ""
+    parts = [p.strip() for p in raw.replace(",", "-").split("-") if p.strip()]
     try:
-        res = await api_client.health()
-        cur = await api_client.get_current_round()
+        ladder = [int(x) for x in parts]
+        if not ladder or any(x < 0 or x > 100000 for x in ladder):
+            raise ValueError
+    except ValueError:
         await update.effective_message.reply_text(
-            f"✅ Mock API Connected!\n"
-            f"Status: {res.get('status')} | Mode: {res.get('mode')}\n"
-            f"Current Round: `{cur.round_id}` ({cur.status})\n"
-            f"Closes at: {cur.closes_at}",
+            "Usage: `/setladder 100-300-700-1600-3600`\n(0 ထည့်ရင် အဲဒီအဆင့် Skip လုပ်ပါမယ်)",
             parse_mode="Markdown",
         )
-    except Exception as exc:
-        await update.effective_message.reply_text(f"❌ API Connection Error:\n{exc}")
-
-
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await guard(update):
         return
 
     chat_id = update.effective_chat.id
-    a = store.get(chat_id)
-    stats = store.today(chat_id)
-    running = bool(
-        a["active"] and chat_id in tasks and not tasks[chat_id].done()
-    )
     strat = get_strategy(chat_id)
-
+    strat.config.stake_ladder = ladder
+    strat.config.base_stake = next((x for x in ladder if x > 0), 100)
+    strat.step_index = 0
+    store.update(chat_id, stake=strat.config.base_stake)
     await update.effective_message.reply_text(
-        "🧪 TRX MOCK API BOT — "
-        + ("RUNNING ▶️" if running else "PAUSED ⏹")
-        + "\n"
-        f"Balance: {a['balance']:,} virtual units\n"
-        f"Stake: {a['stake']:,} | Side: {a['side']}\n"
-        f"Mode: Auto 1-min Sync (Apps Script)\n"
-        f"Today bets: {stats['count']}/{a['max_daily_bets']}\n"
-        f"Today P/L: {stats['pnl']:+,}\n"
-        f"Stop-loss: {a['stop_loss']:,} | Take-profit: {a['take_profit']:,}\n"
-        f"──────────────\n"
-        f"Strategy: {'ON' if strat.config.enabled else 'OFF'} "
-        f"({strat.config.mode})\n"
-        f"Min confidence: {strat.config.min_confidence}%\n"
-        f"Pred mode: {a.get('pred_mode', 'mixed')}"
+        f"💰 Stake Ladder updated → `{'-'.join(map(str, ladder))}`",
+        parse_mode="Markdown",
+    )
+
+
+async def setpattern(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await guard(update):
+        return
+    pat = (context.args[0] if context.args else "").upper()
+    if not pat or any(c not in ("B", "S") for c in pat):
+        await update.effective_message.reply_text(
+            "Usage: `/setpattern BSSBSB` (B=BIG, S=SMALL)", parse_mode="Markdown"
+        )
+        return
+
+    chat_id = update.effective_chat.id
+    strat = get_strategy(chat_id)
+    strat.config.pattern = pat
+    strat.config.strategy_type = "pattern"
+    strat.pattern_index = 0
+    await update.effective_message.reply_text(
+        f"📚 Pattern Strategy active → `{pat}`", parse_mode="Markdown"
+    )
+
+
+async def sllayer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await guard(update):
+        return
+    try:
+        trig = int(context.args[0])
+        wait_r = int(context.args[1])
+        if not (0 <= trig <= 10 and 0 <= wait_r <= 10):
+            raise ValueError
+    except (IndexError, ValueError):
+        await update.effective_message.reply_text(
+            "Usage: `/sllayer 3 2` (၃ ပွဲဆက်ရှုံးရင် ၂ ပွဲစောင့်)\nပိတ်ရန် `/sllayer 0 0`",
+            parse_mode="Markdown",
+        )
+        return
+
+    strat = get_strategy(update.effective_chat.id)
+    strat.config.sl_wait_trigger = trig
+    strat.config.sl_wait_rounds = wait_r
+    strat.wait_remaining = 0
+    await update.effective_message.reply_text(
+        f"🛡️ SL Wait Layer → Trigger: `{trig} losses`, Wait: `{wait_r} rounds`",
+        parse_mode="Markdown",
     )
 
 
@@ -204,15 +314,15 @@ async def stake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not MIN_STAKE <= n <= MAX_STAKE:
             raise ValueError
     except (IndexError, ValueError):
-        await update.effective_message.reply_text(
-            f"Usage: /stake 100 ({MIN_STAKE}–{MAX_STAKE})"
-        )
+        await update.effective_message.reply_text(f"Usage: /stake 100 ({MIN_STAKE}–{MAX_STAKE})")
         return
 
     chat_id = update.effective_chat.id
     store.update(chat_id, stake=n)
-    get_strategy(chat_id).config.base_stake = n
-    await update.effective_message.reply_text(f"Fixed stake → {n:,} VIRTUAL")
+    strat = get_strategy(chat_id)
+    strat.config.base_stake = n
+    strat.config.stake_ladder = [n, n * 2, n * 4, n * 8, n * 16]
+    await update.effective_message.reply_text(f"Fixed base stake → {n:,} Ks")
 
 
 async def side(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -222,28 +332,10 @@ async def side(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if pick not in ("BIG", "SMALL"):
         await update.effective_message.reply_text("Usage: /side big | /side small")
         return
-
     chat_id = update.effective_chat.id
     store.update(chat_id, side=pick)
     get_strategy(chat_id).config.fixed_side = pick
     await update.effective_message.reply_text(f"Fixed side → {pick}")
-
-
-async def interval(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await guard(update):
-        return
-    try:
-        n = int(context.args[0])
-        if not MIN_INTERVAL <= n <= MAX_INTERVAL:
-            raise ValueError
-    except (IndexError, ValueError):
-        await update.effective_message.reply_text(
-            f"Usage: /interval 60 ({MIN_INTERVAL}–{MAX_INTERVAL})"
-        )
-        return
-
-    store.update(update.effective_chat.id, interval_sec=n)
-    await update.effective_message.reply_text(f"Fallback interval → {n} seconds")
 
 
 async def limits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -258,95 +350,10 @@ async def limits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         ):
             raise ValueError
     except (ValueError, IndexError):
-        await update.effective_message.reply_text(
-            "Usage: /limits 3000 3000 40"
-        )
+        await update.effective_message.reply_text("Usage: /limits 3000 3000 40")
         return
-
-    store.update(
-        update.effective_chat.id,
-        stop_loss=loss,
-        take_profit=profit,
-        max_daily_bets=maximum,
-    )
-    await update.effective_message.reply_text(
-        f"Limits → loss {loss:,} | profit {profit:,} | bets {maximum}"
-    )
-
-
-# ── Prediction ───────────────────────────────────────────────────────────────
-
-async def signal_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await guard(update):
-        return
-
-    chat_id = update.effective_chat.id
-    a = store.get(chat_id)
-    recent = store.recent_outcomes(chat_id, 20)
-    predictor = Predictor(a.get("pred_mode", "mixed"))
-    sig = predictor.generate(recent)
-
-    bar = "█" * (sig.confidence // 10) + "░" * (10 - sig.confidence // 10)
-    await update.effective_message.reply_text(
-        f"📡 SIGNAL PREVIEW\n"
-        f"Side: *{sig.side}*\n"
-        f"Confidence: {sig.confidence}%  [{bar}]\n"
-        f"Reason: {sig.reason}",
-        parse_mode="Markdown",
-    )
-
-
-async def predmode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await guard(update):
-        return
-    mode = (context.args[0] if context.args else "").lower()
-    if mode not in ("mixed", "momentum", "mean_reversion", "random"):
-        await update.effective_message.reply_text(
-            "Usage: /predmode mixed|momentum|mean_reversion|random"
-        )
-        return
-
-    store.update(update.effective_chat.id, pred_mode=mode)
-    await update.effective_message.reply_text(f"Prediction mode → {mode}")
-
-
-# ── Auto-Strategy ────────────────────────────────────────────────────────────
-
-async def strategy_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await guard(update):
-        return
-    arg = (context.args[0] if context.args else "").lower()
-    if arg not in ("on", "off"):
-        await update.effective_message.reply_text("Usage: /strategy on | /strategy off")
-        return
-
-    chat_id = update.effective_chat.id
-    enabled = arg == "on"
-    store.update(chat_id, strategy_enabled=1 if enabled else 0)
-    strat = get_strategy(chat_id)
-    strat.config.enabled = enabled
-    if enabled:
-        strat.reset_streak()
-
-    await update.effective_message.reply_text(
-        f"Auto-Strategy → {'ON ✅' if enabled else 'OFF ⏹'}"
-    )
-
-
-async def strategymode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await guard(update):
-        return
-    mode = (context.args[0] if context.args else "").lower()
-    if mode not in ("signal", "fixed", "martingale"):
-        await update.effective_message.reply_text(
-            "Usage: /strategymode signal|fixed|martingale"
-        )
-        return
-
-    chat_id = update.effective_chat.id
-    store.update(chat_id, strategy_mode=mode)
-    get_strategy(chat_id).config.mode = mode
-    await update.effective_message.reply_text(f"Strategy mode → {mode}")
+    store.update(update.effective_chat.id, stop_loss=loss, take_profit=profit, max_daily_bets=maximum)
+    await update.effective_message.reply_text(f"Limits → SL {loss:,} | TP {profit:,} | Max {maximum}")
 
 
 async def minconf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -359,39 +366,204 @@ async def minconf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except (IndexError, ValueError):
         await update.effective_message.reply_text("Usage: /minconf 65 (50–95)")
         return
-
     chat_id = update.effective_chat.id
     store.update(chat_id, min_confidence=n)
     get_strategy(chat_id).config.min_confidence = n
     await update.effective_message.reply_text(f"Min confidence → {n}%")
 
 
-async def strategyinfo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def apihealth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await guard(update):
         return
+    try:
+        res = await api_client.health()
+        cur = await api_client.get_current_round()
+        await update.effective_message.reply_text(
+            f"✅ Mock API Connected ({res.get('status')})\n"
+            f"Current Round: `{cur.round_id}` ({cur.status})\nCloses: {cur.closes_at}",
+            parse_mode="Markdown",
+        )
+    except Exception as exc:
+        await update.effective_message.reply_text(f"❌ API Error: {exc}")
 
+
+async def history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await guard(update):
+        return
+    items = store.history(update.effective_chat.id, 10)
+    if not items:
+        await update.effective_message.reply_text("No rounds played yet.")
+        return
+    lines = ["📊 *LAST 10 ROUNDS*"]
+    for r in items:
+        lines.append(
+            f"#{r['id']} {r['side']}/{r['outcome']} → {'✅' if r['won'] else '❌'} `{r['net']:+,}`"
+        )
+    await update.effective_message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await guard(update):
+        return
+    if context.args != ["CONFIRM"]:
+        await update.effective_message.reply_text("Reset လုပ်ရန် `/stop` ပြီး `/reset CONFIRM` ရိုက်ပါ။", parse_mode="Markdown")
+        return
     chat_id = update.effective_chat.id
+    if tasks.get(chat_id) and not tasks[chat_id].done():
+        await update.effective_message.reply_text("Please stop the bot first.")
+        return
+    store.reset_demo(chat_id)
+    get_strategy(chat_id).reset_session()
+    await update.effective_message.reply_text("🔄 Ledger reset to 100,000 Ks.")
+
+
+# ── Session Lifecycle (Deploy / Abort Report) ────────────────────────────────
+
+async def start_bot_session(chat_id: int, app: Application) -> None:
+    existing = tasks.get(chat_id)
+    if existing and not existing.done():
+        return
+
     a = store.get(chat_id)
     strat = get_strategy(chat_id)
-    cfg = strat.config
+    strat.reset_session()
+    session_meta[chat_id] = {
+        "start_time": time.time(),
+        "start_balance": a["balance"],
+        "bets": 0,
+        "wins": 0,
+        "losses": 0,
+    }
 
-    await update.effective_message.reply_text(
-        "🤖 AUTO-STRATEGY INFO\n"
-        f"Enabled: {'YES' if cfg.enabled else 'NO'}\n"
-        f"Mode: {cfg.mode}\n"
-        f"Min confidence: {cfg.min_confidence}%\n"
-        f"Base stake: {cfg.base_stake:,}\n"
-        f"Fixed side: {cfg.fixed_side}\n"
-        f"Consecutive losses: {strat._consecutive_losses}\n"
-        f"Current martingale stake: {strat._current_stake:,}\n"
-        f"Pred mode: {a.get('pred_mode', 'mixed')}"
+    store.update(chat_id, active=1)
+    tasks[chat_id] = app.create_task(loop(chat_id, app))
+
+    ladder_str = ", ".join(str(x) for x in strat.config.stake_ladder)
+    await app.bot.send_message(
+        chat_id,
+        f"🍏 *BOT DEPLOYED*\n"
+        f"💫 Balance: Virtual • `{a['balance']:,} Ks`\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"💫 Game: `TRX_1M` • Big/Small\n"
+        f"💫 Strategy: `{strat.config.strategy_type.upper()}`\n"
+        f"💫 Betting: `{strat.config.bet_method.upper()}`\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"💫 Bet Amount: `{ladder_str} Ks`\n"
+        f"💫 Profit Target: `{a['take_profit']:,} Ks`\n"
+        f"💫 Stop Loss: `{a['stop_loss']:,} Ks`",
+        parse_mode="Markdown",
     )
+
+
+async def stop_bot_session(chat_id: int, app: Application, stop_reason: str = "Manual Halt") -> None:
+    store.update(chat_id, active=0)
+    t = tasks.get(chat_id)
+    if t and not t.done():
+        t.cancel()
+
+    a = store.get(chat_id)
+    strat = get_strategy(chat_id)
+    meta = session_meta.pop(chat_id, None)
+    if meta:
+        profit = a["balance"] - meta["start_balance"]
+        runtime = format_duration(time.time() - meta["start_time"])
+        await app.bot.send_message(
+            chat_id,
+            f"🍎 *BOT ABORTED* ({stop_reason})\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"💳 Final Balance: `{a['balance']:,} Ks`\n"
+            f"🏆 Session Profit: `{profit:+,} Ks`\n\n"
+            f"📊 *Session Summary*\n"
+            f"🔸 Total Bets: `{meta['bets']}`\n"
+            f"✅ Wins: `{meta['wins']}`\n"
+            f"❌ Losses: `{meta['losses']}`\n"
+            f"📈 Max Win Streak: `{strat.max_win_streak}`\n"
+            f"📉 Max Loss Streak: `{strat.max_loss_streak}`\n\n"
+            f"⏰ Runtime: `{runtime}`",
+            parse_mode="Markdown",
+        )
+
+
+async def run_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await guard(update):
+        await start_bot_session(update.effective_chat.id, context.application)
+
+
+async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await guard(update):
+        await stop_bot_session(update.effective_chat.id, context.application, "User Stopped")
+
+
+# ── Inline Button Callbacks ──────────────────────────────────────────────────
+
+async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not allow(update):
+        if query:
+            await query.answer("⛔ Owner only", show_alert=True)
+        return
+
+    await query.answer()
+    chat_id = update.effective_chat.id
+    store.ensure(chat_id)
+    data = query.data or ""
+    strat = get_strategy(chat_id)
+
+    if data == "act:run":
+        await start_bot_session(chat_id, context.application)
+    elif data == "act:stop":
+        await stop_bot_session(chat_id, context.application, "Button Halt")
+    elif data == "cycle:strat":
+        order = ["signal", "pattern", "fixed"]
+        nxt = order[(order.index(strat.config.strategy_type) + 1) % len(order)]
+        strat.config.strategy_type = nxt
+    elif data == "cycle:method":
+        order = ["ladder", "anti_martingale", "dalembert"]
+        nxt = order[(order.index(strat.config.bet_method) + 1) % len(order)]
+        strat.config.bet_method = nxt
+        strat.step_index = 0
+    elif data == "cycle:side":
+        a = store.get(chat_id)
+        nxt = "SMALL" if a["side"] == "BIG" else "BIG"
+        store.update(chat_id, side=nxt)
+        strat.config.fixed_side = nxt
+    elif data == "cycle:sl":
+        presets = [(0, 0), (2, 1), (3, 2), (4, 3)]
+        cur = (strat.config.sl_wait_trigger, strat.config.sl_wait_rounds)
+        nxt = presets[(presets.index(cur) + 1) % len(presets)] if cur in presets else (3, 2)
+        strat.config.sl_wait_trigger, strat.config.sl_wait_rounds = nxt
+        strat.wait_remaining = 0
+    elif data.startswith("guide:"):
+        arg = data.split(":", 1)[1]
+        if arg == "close":
+            await query.edit_message_text(
+                render_control_panel(chat_id),
+                reply_markup=main_menu_keyboard(chat_id),
+                parse_mode="Markdown",
+            )
+            return
+        page = int(arg)
+        await query.edit_message_text(
+            f"{GUIDE_PAGES[page]}\n\n*Step {page + 1}/{len(GUIDE_PAGES)}*",
+            reply_markup=guide_keyboard(page),
+            parse_mode="Markdown",
+        )
+        return
+
+    # Refresh main control panel
+    try:
+        await query.edit_message_text(
+            render_control_panel(chat_id),
+            reply_markup=main_menu_keyboard(chat_id),
+            parse_mode="Markdown",
+        )
+    except Exception:
+        pass
 
 
 # ── Core 1-Minute Synced API Loop ────────────────────────────────────────────
 
 def _seconds_until_close(closes_at_iso: str) -> float:
-    """Calculate seconds remaining until closes_at."""
     try:
         closes_dt = datetime.fromisoformat(closes_at_iso)
         now_dt = datetime.now(closes_dt.tzinfo)
@@ -406,7 +578,6 @@ async def loop(chat_id: int, app: Application) -> None:
 
     try:
         while store.get(chat_id)["active"]:
-            # 1. Fetch current round from Apps Script
             try:
                 cur_round = await api_client.get_current_round()
             except Exception as exc:
@@ -424,46 +595,35 @@ async def loop(chat_id: int, app: Application) -> None:
             a = store.get(chat_id)
             strat = get_strategy(chat_id)
             recent = store.recent_outcomes(chat_id, 20)
-            predictor = Predictor(a.get("pred_mode", "mixed"))
-            sig = predictor.generate(recent)
+            sig = Predictor(a.get("pred_mode", "mixed")).generate(recent)
 
-            # 2. Decide whether / how to bet
-            if strat.config.enabled:
-                decision = strat.decide(sig, a["balance"])
-                if not decision.should_bet:
-                    await app.bot.send_message(
-                        chat_id,
-                        f"⏭ SKIP Round `{round_id}`\n"
-                        f"{decision.reason}\n"
-                        f"Signal: {sig.side} ({sig.confidence}%) · Wait {int(wait_sec)}s",
-                        parse_mode="Markdown",
-                    )
-                    last_played_round_id = round_id
-                    await asyncio.sleep(wait_sec)
-                    continue
-                use_side = decision.side
-                use_stake = decision.stake
-                reason = decision.reason
-            else:
-                use_side = a["side"]
-                use_stake = a["stake"]
-                reason = "Manual fixed settings"
+            decision = strat.decide(sig, a["balance"])
+            if not decision.should_bet:
+                await app.bot.send_message(
+                    chat_id,
+                    f"⏭ *SKIP* Round `{round_id}`\n{decision.reason}",
+                    parse_mode="Markdown",
+                )
+                last_played_round_id = round_id
+                await asyncio.sleep(wait_sec)
+                continue
+
+            use_side = decision.side
+            use_stake = decision.stake
+            reason = decision.reason
 
             await app.bot.send_message(
                 chat_id,
-                f"⏳ Round `{round_id}` OPEN\n"
-                f"Bet: *{use_side}* × {use_stake:,}\n"
-                f"Waiting {int(wait_sec)}s for result...",
+                f"⏳ Issue `{round_id}` OPEN\n"
+                f"🎯 Bet: *{use_side}* × `{use_stake:,} Ks`\n"
+                f"📌 {reason} · ({int(wait_sec)}s)",
                 parse_mode="Markdown",
             )
 
-            # 3. Wait until round closes
             await asyncio.sleep(wait_sec)
-
             if not store.get(chat_id)["active"]:
                 break
 
-            # 4. Trigger settlement on Apps Script & read result
             outcome = None
             for _ in range(4):
                 try:
@@ -477,15 +637,9 @@ async def loop(chat_id: int, app: Application) -> None:
                 await asyncio.sleep(2)
 
             if not outcome:
-                await app.bot.send_message(
-                    chat_id,
-                    f"⚠️ Round `{round_id}` result delayed from API. Moving to next.",
-                    parse_mode="Markdown",
-                )
                 last_played_round_id = round_id
                 continue
 
-            # 5. Record result in SQLite ledger
             try:
                 r = store.virtual_round(
                     chat_id,
@@ -495,31 +649,33 @@ async def loop(chat_id: int, app: Application) -> None:
                     stake=use_stake,
                     signal_side=sig.side,
                     signal_conf=sig.confidence,
-                    signal_reason=sig.reason,
+                    signal_reason=reason,
                 )
             except RiskStop as exc:
-                store.update(chat_id, active=0)
-                await app.bot.send_message(chat_id, "🛑 AUTO-STOP: " + str(exc))
+                await stop_bot_session(chat_id, app, str(exc))
                 break
             except Exception:
                 logger.exception("Engine error")
-                store.update(chat_id, active=0)
-                await app.bot.send_message(chat_id, "🛑 Engine error; bot paused.")
+                await stop_bot_session(chat_id, app, "Engine Error")
                 break
 
             last_played_round_id = round_id
             strat.on_result(r["won"])
 
-            result_label = "✅ WIN" if r["won"] else "❌ LOSS"
+            if chat_id in session_meta:
+                session_meta[chat_id]["bets"] += 1
+                if r["won"]:
+                    session_meta[chat_id]["wins"] += 1
+                else:
+                    session_meta[chat_id]["losses"] += 1
+
+            badge = "✅ WIN" if r["won"] else "❌ LOSS"
             await app.bot.send_message(
                 chat_id,
-                f"🎲 Round `{round_id}` — {result_label}\n"
-                f"Bet: {r['side']} × {r['stake']:,} | Outcome: *{r['outcome']}*\n"
-                f"P/L: {r['net']:+,} | Balance: {r['balance']:,}\n"
-                f"Today: {r['daily_pnl']:+,} / {r['daily_count']} bets\n"
-                f"──────────────\n"
-                f"Signal: {sig.side} ({sig.confidence}%) · {sig.reason}\n"
-                f"Strategy: {reason}",
+                f"🎲 Issue `{round_id}` — *{badge}*\n"
+                f"Bet: {r['side']} (`{r['stake']:,}`) | Result: *{r['outcome']}*\n"
+                f"P/L: `{r['net']:+,} Ks` | Bal: `{r['balance']:,} Ks`\n"
+                f"Today: `{r['daily_pnl']:+,} Ks` ({r['daily_count']} bets)",
                 parse_mode="Markdown",
             )
 
@@ -532,96 +688,16 @@ async def loop(chat_id: int, app: Application) -> None:
             tasks.pop(chat_id, None)
 
 
-async def run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await guard(update):
-        return
-
-    chat_id = update.effective_chat.id
-    existing = tasks.get(chat_id)
-    if existing and not existing.done():
-        await update.effective_message.reply_text(
-            "Already running. /stop to pause."
-        )
-        return
-
-    store.update(chat_id, active=1)
-    tasks[chat_id] = context.application.create_task(
-        loop(chat_id, context.application)
-    )
-    await update.effective_message.reply_text(
-        "▶️ Auto 1-min Mock API loop started!\n"
-        "Google Apps Script မှ တစ်မိနစ်တိုင်း Round ယူပါမည်။\n"
-        "/stop to pause."
-    )
-
-
-async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await guard(update):
-        return
-
-    chat_id = update.effective_chat.id
-    store.update(chat_id, active=0)
-    task = tasks.get(chat_id)
-    if task and not task.done():
-        task.cancel()
-    await update.effective_message.reply_text("⏹ Simulation paused.")
-
-
-async def history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await guard(update):
-        return
-
-    items = store.history(update.effective_chat.id)
-    if not items:
-        await update.effective_message.reply_text("No rounds played yet.")
-        return
-
-    lines = ["🧪 LAST MOCK API ROUNDS"]
-    for r in items:
-        sig = ""
-        if r.get("signal_side"):
-            sig = f" | sig:{r['signal_side']}({r.get('signal_conf', '?')}%)"
-        lines.append(
-            f"#{r['id']} {r['side']}/{r['outcome']} "
-            f"{'WIN' if r['won'] else 'LOSS'} {r['net']:+,}{sig}"
-        )
-    await update.effective_message.reply_text("\n".join(lines))
-
-
-async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await guard(update):
-        return
-
-    if context.args != ["CONFIRM"]:
-        await update.effective_message.reply_text(
-            "Reset လုပ်ရန် /stop ပြီး /reset CONFIRM ရိုက်ပါ။"
-        )
-        return
-
-    chat_id = update.effective_chat.id
-    if tasks.get(chat_id) and not tasks[chat_id].done():
-        await update.effective_message.reply_text("Please /stop first.")
-        return
-
-    store.reset_demo(chat_id)
-    if chat_id in strategies:
-        strategies[chat_id].reset_streak()
-    await update.effective_message.reply_text(
-        "Virtual ledger reset to 100,000. History cleared."
-    )
-
-
-# ── Entry point & Web Dashboard Server ───────────────────────────────────────
+# ── Web Dashboard Server ─────────────────────────────────────────────────────
 
 async def _start_health_server(app: Application) -> None:
-    """Serve Web App UI + JSON state API + Render health check."""
     from aiohttp import web
 
     async def handle_index(request):
         html_path = Path("index.html")
         if html_path.exists():
             return web.FileResponse(html_path)
-        return web.Response(text="OK - TRX Mock Bot Running")
+        return web.Response(text="OK - LOTTERY AUTOBET V2.0")
 
     async def handle_health(request):
         return web.Response(text="OK")
@@ -633,6 +709,7 @@ async def _start_health_server(app: Application) -> None:
         store.ensure(chat_id)
         a = store.get(chat_id)
         stats = store.today(chat_id)
+        strat = get_strategy(chat_id)
         recent = store.recent_outcomes(chat_id, 20)
         sig = Predictor(a.get("pred_mode", "mixed")).generate(recent)
         running = bool(a["active"] and chat_id in tasks and not tasks[chat_id].done())
@@ -652,7 +729,7 @@ async def _start_health_server(app: Application) -> None:
             "daily_pnl": stats["pnl"],
             "round_id": round_id,
             "seconds_left": seconds_left,
-            "strategy_mode": a.get("strategy_mode", "signal"),
+            "strategy_mode": f"{strat.config.strategy_type} · {strat.config.bet_method}",
             "signal": {
                 "side": sig.side,
                 "confidence": sig.confidence,
@@ -669,15 +746,9 @@ async def _start_health_server(app: Application) -> None:
         body = await request.json()
         act = body.get("action")
         if act == "run":
-            existing = tasks.get(chat_id)
-            if not existing or existing.done():
-                store.update(chat_id, active=1)
-                tasks[chat_id] = app.create_task(loop(chat_id, app))
+            await start_bot_session(chat_id, app)
         elif act == "stop":
-            store.update(chat_id, active=0)
-            t = tasks.get(chat_id)
-            if t and not t.done():
-                t.cancel()
+            await stop_bot_session(chat_id, app, "Web Dashboard Halt")
         return web.json_response({"ok": True})
 
     web_app = web.Application()
@@ -691,17 +762,12 @@ async def _start_health_server(app: Application) -> None:
     port = int(os.getenv("PORT", "10000"))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logger.info("Web App & Health server listening on port %s", port)
+    logger.info("V2.0 Web App & Health server listening on port %s", port)
 
 
 def main() -> None:
     if not TOKEN:
-        raise SystemExit(
-            "Missing TELEGRAM_BOT_TOKEN. Copy .env.example → .env"
-        )
-
-    if not OWNER_IDS:
-        print("ALLOWED_CHAT_ID not set — only /id will work.")
+        raise SystemExit("Missing TELEGRAM_BOT_TOKEN")
 
     store.pause_all_at_restart()
 
@@ -713,31 +779,27 @@ def main() -> None:
     handlers = (
         ("start", start),
         ("help", start),
-        ("dashboard", dashboard_cmd),
+        ("menu", start),
         ("id", identify),
         ("apihealth", apihealth),
-        ("status", status),
         ("stake", stake),
+        ("setladder", setladder),
+        ("setpattern", setpattern),
+        ("sllayer", sllayer),
         ("side", side),
-        ("interval", interval),
         ("limits", limits),
-        ("run", run),
-        ("stop", stop),
+        ("minconf", minconf),
+        ("run", run_cmd),
+        ("stop", stop_cmd),
         ("history", history),
         ("reset", reset),
-        # prediction
-        ("signal", signal_cmd),
-        ("predmode", predmode),
-        # strategy
-        ("strategy", strategy_toggle),
-        ("strategymode", strategymode),
-        ("minconf", minconf),
-        ("strategyinfo", strategyinfo),
     )
     for name, callback in handlers:
         app.add_handler(CommandHandler(name, callback))
 
-    logger.info("TRX Mock API bot v1.4 starting…")
+    app.add_handler(CallbackQueryHandler(on_callback))
+
+    logger.info("LOTTERY AUTOBET V2.0 starting…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
