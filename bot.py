@@ -380,7 +380,7 @@ def _seconds_until_close(closes_at_iso: str) -> float:
         closes_dt = datetime.fromisoformat(closes_at_iso)
         now_dt = datetime.now(closes_dt.tzinfo)
         diff = (closes_dt - now_dt).total_seconds()
-        return max(1.0, min(diff + 1.5, 65.0))  # +1.5s buffer so Apps Script settles
+        return max(1.0, min(diff + 1.5, 65.0))
     except Exception:
         return 60.0
 
@@ -398,7 +398,6 @@ async def loop(chat_id: int, app: Application) -> None:
                 await asyncio.sleep(5)
                 continue
 
-            # If the returned round was already settled just now, immediately fetch again for new open round
             if cur_round.status != "open" or cur_round.round_id == last_played_round_id:
                 await asyncio.sleep(2)
                 continue
@@ -452,7 +451,7 @@ async def loop(chat_id: int, app: Application) -> None:
             outcome = None
             for _ in range(4):
                 try:
-                    await api_client.get_current_round()  # triggers settleRound() if time passed
+                    await api_client.get_current_round()
                     res_round = await api_client.get_result(round_id)
                     if res_round.status == "settled" and res_round.result:
                         outcome = res_round.result
@@ -597,9 +596,71 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────
-# ── Entry point ──────────────────────────────────────────────────────────────
+
+async def _start_health_server() -> None:
+    """Keep Render Free Web Service alive by binding to $PORT."""
+    from aiohttp import web
+
+    async def handle_health(request):
+        return web.Response(text="OK - TRX Mock Bot Running")
+
+    web_app = web.Application()
+    web_app.router.add_get("/", handle_health)
+    web_app.router.add_get("/health", handle_health)
+
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    port = int(os.getenv("PORT", "10000"))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info("Health check web server listening on port %s", port)
+
 
 def main() -> None:
-...
+    if not TOKEN:
+        raise SystemExit(
+            "Missing TELEGRAM_BOT_TOKEN. Copy .env.example → .env"
+        )
+
+    if not OWNER_ID or not OWNER_ID.isdecimal():
+        print("ALLOWED_CHAT_ID not set — only /id will work.")
+
+    store.pause_all_at_restart()
+
+    async def post_init(application: Application) -> None:
+        await _start_health_server()
+
+    app = Application.builder().token(TOKEN).post_init(post_init).build()
+
+    handlers = (
+        ("start", start),
+        ("help", start),
+        ("id", identify),
+        ("apihealth", apihealth),
+        ("status", status),
+        ("stake", stake),
+        ("side", side),
+        ("interval", interval),
+        ("limits", limits),
+        ("run", run),
+        ("stop", stop),
+        ("history", history),
+        ("reset", reset),
+        # prediction
+        ("signal", signal_cmd),
+        ("predmode", predmode),
+        # strategy
+        ("strategy", strategy_toggle),
+        ("strategymode", strategymode),
+        ("minconf", minconf),
+        ("strategyinfo", strategyinfo),
+    )
+    for name, callback in handlers:
+        app.add_handler(CommandHandler(name, callback))
+
+    logger.info("TRX Mock API bot v1.3 starting…")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
 if __name__ == "__main__":
     main()
